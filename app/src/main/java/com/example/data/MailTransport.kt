@@ -169,7 +169,7 @@ object MailTransport {
                 val fetchLines = mutableListOf<String>()
                 while (true) {
                     val line = reader.readLine() ?: break
-                    if (line.startsWith("A4 OK")) break
+                    if (line.startsWith("A4 OK") || line.startsWith("A4 NO") || line.startsWith("A4 BAD")) break
                     fetchLines.add(line)
                 }
                 val fullText = fetchLines.joinToString("\n")

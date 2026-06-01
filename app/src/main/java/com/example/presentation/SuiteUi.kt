@@ -1298,6 +1298,8 @@ fun CliChatTab(viewModel: SuiteViewModel) {
     val cliLogs by viewModel.cliLogs.collectAsState()
     var cliInputText by remember { mutableStateOf("") }
     val scrollState = rememberLazyListState()
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     LaunchedEffect(cliLogs.size) {
         if (cliLogs.isNotEmpty()) {
@@ -1314,7 +1316,7 @@ fun CliChatTab(viewModel: SuiteViewModel) {
             .fillMaxSize()
             .padding(vertical = 8.dp)
     ) {
-        // Welcoming ChatGPT-style header
+        // Welcoming ChatGPT-style header with direct Diagnostic Export button
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1344,7 +1346,7 @@ fun CliChatTab(viewModel: SuiteViewModel) {
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "ОРДЕНСКИЙ ИИ-ПРОВОДНИК & CLI",
                         style = MaterialTheme.typography.titleSmall.copy(
@@ -1354,12 +1356,58 @@ fun CliChatTab(viewModel: SuiteViewModel) {
                         )
                     )
                     Text(
-                        text = "Задайте вопрос на русском языке или введите директиву CLI",
+                        text = "Задайте вопрос ИИ или коснитесь сообщения для копирования",
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = TextMuted,
                             fontSize = 11.sp
                         )
                     )
+                }
+                
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = {
+                            val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+                            val maskedKey = if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+                                "ОТСУТСТВУЕТ (Заглушка)"
+                            } else {
+                                "АКТИВЕН (" + apiKey.take(6) + "..." + apiKey.takeLast(4) + ")"
+                            }
+                            val activeModel = com.example.data.GeminiService.getActiveModelName()
+                            val report = com.example.data.DiagnosticsTracker.getDiagnosticsReport(maskedKey, activeModel)
+                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(report))
+                            viewModel.showToast("Диагностика скопирована!")
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Копировать лог диагностики",
+                            tint = AccentTeal
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+                            val maskedKey = if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+                                "ОТСУТСТВУЕТ (Заглушка)"
+                            } else {
+                                "АКТИВЕН (" + apiKey.take(6) + "..." + apiKey.takeLast(4) + ")"
+                            }
+                            val activeModel = com.example.data.GeminiService.getActiveModelName()
+                            val report = com.example.data.DiagnosticsTracker.getDiagnosticsReport(maskedKey, activeModel)
+                            com.example.data.DiagnosticsTracker.shareDiagnostics(context, report)
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Поделиться диагностикой",
+                            tint = HighContrastGold
+                        )
+                    }
                 }
             }
         }
@@ -1406,8 +1454,18 @@ fun CliChatTab(viewModel: SuiteViewModel) {
             } else {
                 items(cliLogs) { log ->
                     val isCommand = log.type == "command"
-                    val isUserMsg = log.text.startsWith("agent@p2p:~$") || isCommand
-                    val displayName = if (isUserMsg) "ВЫ" else if (log.type == "help" || log.text.contains("Проводник:")) "ГИД-ПРОВОДНИК [ИИ]" else "СИСТЕМА [CLI]"
+                    val isUserMsg = log.text.startsWith("agent@p2p:~$") || log.text.startsWith("chat[") || log.text.startsWith("chat:~#") || isCommand
+                    val isPeerMsg = log.type.startsWith("peer_")
+                    val displayName = if (isUserMsg) {
+                        "ВЫ"
+                    } else if (isPeerMsg) {
+                        val peerName = log.type.substringAfter("peer_")
+                        "${peerName.uppercase()} [СОРАТНИК]"
+                    } else if (log.type == "help" || log.text.contains("Проводник:")) {
+                        "ГИД-ПРОВОДНИК [ИИ]"
+                    } else {
+                        "СИСТЕМА [CLI]"
+                    }
                     
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1423,7 +1481,12 @@ fun CliChatTab(viewModel: SuiteViewModel) {
                                 text = displayName,
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.Bold,
-                                    color = if (isUserMsg) AccentTeal else if (log.type == "help") HighContrastGold else TextMuted,
+                                    color = when {
+                                        isUserMsg -> AccentTeal
+                                        isPeerMsg -> Color(0xFFD97706)
+                                        log.type == "help" -> HighContrastGold
+                                        else -> TextMuted
+                                    },
                                     fontSize = 10.sp
                                 ),
                                 modifier = Modifier.padding(bottom = 3.dp, start = 4.dp, end = 4.dp)
@@ -1433,6 +1496,7 @@ fun CliChatTab(viewModel: SuiteViewModel) {
                                 colors = CardDefaults.cardColors(
                                     containerColor = when {
                                         isUserMsg -> Color(0xFFE2E8F0) // Premium soft gray-blue bubble for user text
+                                        isPeerMsg -> Color(0xFFFEF9C3) // Light warm gold/yellow for peer replies
                                         log.type == "success" -> Color(0xFFDCFCE7) // Mint light green success
                                         log.type == "error" -> Color(0xFFFEE2E2) // Light red warning error
                                         log.type == "help" -> Color(0xFFF0FDF4) // Cosmic very light blue/green for AI
@@ -1446,7 +1510,17 @@ fun CliChatTab(viewModel: SuiteViewModel) {
                                     bottomEnd = if (isUserMsg) 2.dp else 14.dp
                                 ),
                                 border = if (log.type == "help") BorderStroke(1.dp, AccentTeal.copy(0.35f)) else BorderStroke(0.5.dp, TextMuted.copy(0.12f)),
-                                modifier = Modifier.shadow(1.dp, RoundedCornerShape(12.dp))
+                                modifier = Modifier
+                                    .shadow(1.dp, RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        val cleanText = if (isUserMsg && log.text.startsWith("agent@p2p:~$ ")) {
+                                            log.text.removePrefix("agent@p2p:~$ ")
+                                        } else {
+                                            log.text
+                                        }
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(cleanText))
+                                        viewModel.showToast("Текст сообщения скопирован!")
+                                    }
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
                                     val cleanText = if (isUserMsg && log.text.startsWith("agent@p2p:~$ ")) {
@@ -1475,6 +1549,69 @@ fun CliChatTab(viewModel: SuiteViewModel) {
                                             )
                                         }
                                     )
+
+                                    if (log.type == "error" || log.text.contains("Не удалось связаться") || log.text.contains("API-ключ") || log.text.contains("ERROR_GEMINI_API_FAIL")) {
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Button(
+                                                onClick = {
+                                                    val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+                                                    val maskedKey = if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+                                                        "ОТСУТСТВУЕТ (Заглушка)"
+                                                    } else {
+                                                        "АКТИВЕН (" + apiKey.take(6) + "..." + apiKey.takeLast(4) + ")"
+                                                    }
+                                                    val activeModel = com.example.data.GeminiService.getActiveModelName()
+                                                    val report = com.example.data.DiagnosticsTracker.getDiagnosticsReport(maskedKey, activeModel)
+                                                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(report))
+                                                    viewModel.showToast("Лог скопирован!")
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier.height(36.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.ContentCopy,
+                                                    contentDescription = "Copy Error",
+                                                    modifier = Modifier.size(14.dp),
+                                                    tint = Color.White
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Скопировать отчет", fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                            }
+                                            
+                                            Button(
+                                                onClick = {
+                                                    val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+                                                    val maskedKey = if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+                                                        "ОТСУТСТВУЕТ (Заглушка)"
+                                                    } else {
+                                                        "АКТИВЕН (" + apiKey.take(6) + "..." + apiKey.takeLast(4) + ")"
+                                                    }
+                                                    val activeModel = com.example.data.GeminiService.getActiveModelName()
+                                                    val report = com.example.data.DiagnosticsTracker.getDiagnosticsReport(maskedKey, activeModel)
+                                                    com.example.data.DiagnosticsTracker.shareDiagnostics(context, report)
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = AccentTeal),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier.height(36.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Share,
+                                                    contentDescription = "Share Error",
+                                                    modifier = Modifier.size(14.dp),
+                                                    tint = Color.White
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Отправить разработчику 🛠️", fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1494,6 +1631,8 @@ fun CliChatTab(viewModel: SuiteViewModel) {
             val suggestions = listOf(
                 "help" to "Справка CLI 📋",
                 "status" to "Статус узла 📡",
+                "diagnostics" to "Диагностика ошибок 🛠️",
+                "clearlogs" to "Очистить логи 🧹",
                 "sync" to "Синхронизация 🔄",
                 "Как устроен Орден?" to "Про Орден 🌌",
                 "Объясни квантовые компьютеры простыми словами" to "Квантовый ИИ ⚛️",
@@ -1508,7 +1647,7 @@ fun CliChatTab(viewModel: SuiteViewModel) {
                         .background(CosmicGray, shape = RoundedCornerShape(16.dp))
                         .border(1.dp, AccentTeal.copy(0.2f), RoundedCornerShape(16.dp))
                         .clickable {
-                            if (cmd == "help" || cmd == "status" || cmd == "sync") {
+                            if (cmd == "help" || cmd == "status" || cmd == "sync" || cmd == "diagnostics" || cmd == "clearlogs") {
                                 viewModel.executeCliCommand(cmd)
                             } else {
                                 cliInputText = cmd

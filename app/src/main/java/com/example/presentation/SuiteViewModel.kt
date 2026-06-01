@@ -542,6 +542,9 @@ class SuiteViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val _currentChatPeerId = MutableStateFlow<String?>(null)
+    val currentChatPeerId: StateFlow<String?> = _currentChatPeerId.asStateFlow()
+
     data class CliLog(val text: String, val type: String = "info")
 
     private val _cliLogs = MutableStateFlow<List<CliLog>>(listOf(
@@ -555,8 +558,33 @@ class SuiteViewModel(application: Application) : AndroidViewModel(application) {
         val trimmed = rawCommand.trim()
         if (trimmed.isEmpty()) return
         
-        _cliLogs.value = _cliLogs.value + CliLog("agent@p2p:~$ $trimmed", "command")
-        
+        val activePeerId = _currentChatPeerId.value
+        if (activePeerId != null) {
+            val lowerTrimmed = trimmed.lowercase()
+            if (lowerTrimmed == "exit" || lowerTrimmed == "quit" || lowerTrimmed == "/exit") {
+                _currentChatPeerId.value = null
+                _cliLogs.value = _cliLogs.value + CliLog("chat:~# $trimmed", "command")
+                _cliLogs.value = _cliLogs.value + CliLog("Режим чата завершен. Возврат в консоль управления пиринговым ядром.", "info")
+                return
+            }
+            if (trimmed.startsWith("/")) {
+                // Execute as regular command with prefix removed
+                val commandWithoutPrefix = trimmed.removePrefix("/")
+                _cliLogs.value = _cliLogs.value + CliLog("chat:~# $trimmed", "command")
+                executeCliCommandInternal(commandWithoutPrefix)
+                return
+            }
+            
+            // Treat as sending interactive chat message to the active peer!
+            _cliLogs.value = _cliLogs.value + CliLog("chat[to: $activePeerId]:~$ $trimmed", "command")
+            sendChatMessageInteractive(activePeerId, trimmed)
+        } else {
+            _cliLogs.value = _cliLogs.value + CliLog("agent@p2p:~$ $trimmed", "command")
+            executeCliCommandInternal(trimmed)
+        }
+    }
+
+    private fun executeCliCommandInternal(trimmed: String) {
         val parts = trimmed.split(Regex("\\s+"))
         if (parts.isEmpty()) return
         val cmd = parts[0].lowercase()
@@ -577,9 +605,13 @@ class SuiteViewModel(application: Application) : AndroidViewModel(application) {
                         • fork <id> <title> | <description> - Создать новую редакцию/ветку правил
                         • selectfork <id> - Перейти на выбранную редакцию документов
                         • msg <recipientEmail> | <text> - Послать P2P шифрованный email-пакет
+                        • chat <id_или_имя> - Начать интерактивный чат с любым соратником напрямую
                         • sync - Инициировать ручной обмен транзакциями с оверлеем
                         • simulation <on/off> - Включить автоматизированную симуляцию
                         • mailconfig <smtpH> <smtpPort> <imapH> <imapPort> <usr> <pas> <ssl> - Быстрые настройки
+                        • diagnostics, logs - Вывести отчет диагностики узла и лог стек-трейсов ошибок
+                        • clearlogs - Очистить историю зарегистрированных ошибок
+                        • setmodel <name> - Принудительно сменить активную ИИ-модель
                         • clear - Очистить буфер вывода терминала
                     """.trimIndent()
                     _cliLogs.value = _cliLogs.value + CliLog(helpText, "help")
@@ -762,6 +794,24 @@ class SuiteViewModel(application: Application) : AndroidViewModel(application) {
                         _cliLogs.value = _cliLogs.value + CliLog("Успешно: подготовлен и транслирован P2P пакет к $recipient.", "success")
                     }
                 }
+                "chat" -> {
+                    val arg = if (trimmed.length > 4) trimmed.substring(4).trim() else ""
+                    if (arg.isBlank()) {
+                        _cliLogs.value = _cliLogs.value + CliLog("Ошибка: формат: chat <id_или_имя_соратника>", "error")
+                    } else {
+                        val matchedAgent = agents.value.find {
+                            it.id.equals(arg, ignoreCase = true) || it.name.equals(arg, ignoreCase = true)
+                        }
+                        if (matchedAgent != null) {
+                            _currentChatPeerId.value = matchedAgent.id
+                            _cliLogs.value = _cliLogs.value + CliLog("--- ВХОД В ИНТЕРАКТИВНЫЙ P2P ЧАТ С ${matchedAgent.name.uppercase()} ---", "success")
+                            _cliLogs.value = _cliLogs.value + CliLog("ID соратника: ${matchedAgent.id}, Роль: ${matchedAgent.role}, Репутация: ${matchedAgent.reputationScore} REP.", "info")
+                            _cliLogs.value = _cliLogs.value + CliLog("Все сообщения будут отправлены соратнику напрямую. Напишите что-нибудь! Для выхода введите 'exit'.", "info")
+                        } else {
+                            _cliLogs.value = _cliLogs.value + CliLog("Ошибка: соратник с именем или ID '$arg' не найден в реестре.", "error")
+                        }
+                    }
+                }
                 "sync" -> {
                     triggerSync()
                     _cliLogs.value = _cliLogs.value + CliLog("Консоль: Инициализирован сетевой опрос...", "info")
@@ -791,6 +841,30 @@ class SuiteViewModel(application: Application) : AndroidViewModel(application) {
                         _cliLogs.value = _cliLogs.value + CliLog("Кондоп: Конфигурация узла $usr зафиксирована.", "success")
                     }
                 }
+                "diagnostics", "logs", "errors" -> {
+                    val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+                    val maskedKey = if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+                        "ОТСУТСТВУЕТ (Заглушка)"
+                    } else {
+                        "АКТИВЕН (" + apiKey.take(6) + "..." + apiKey.takeLast(4) + ")"
+                    }
+                    val activeModel = com.example.data.GeminiService.getActiveModelName()
+                    val reportText = com.example.data.DiagnosticsTracker.getDiagnosticsReport(maskedKey, activeModel)
+                    _cliLogs.value = _cliLogs.value + CliLog(reportText, "help")
+                }
+                "clearlogs" -> {
+                    com.example.data.DiagnosticsTracker.clearAllLogs()
+                    _cliLogs.value = _cliLogs.value + CliLog("Журналы отладки и истории ошибок успешно стерты.", "success")
+                }
+                "setmodel" -> {
+                    if (parts.size < 2) {
+                        _cliLogs.value = _cliLogs.value + CliLog("Ошибка: укажите название модели. Пример: setmodel gemini-2.5-flash", "error")
+                    } else {
+                        val mName = parts[1]
+                        com.example.data.GeminiService.customModelOverride = mName
+                        _cliLogs.value = _cliLogs.value + CliLog("Модификация ИИ: Активная модель переопределена на $mName", "success")
+                    }
+                }
                 else -> {
                     viewModelScope.launch {
                         _cliLogs.value = _cliLogs.value + CliLog("Проводник: Настраиваюсь на ноосферу Ордена...", "info")
@@ -812,13 +886,114 @@ class SuiteViewModel(application: Application) : AndroidViewModel(application) {
                             - Симуляция оверлея: $isSim
                         """.trimIndent()
                         
-                        val response = com.example.data.GeminiService.generateGuideResponse(trimmed, contextText)
+                        var response = com.example.data.GeminiService.generateGuideResponse(trimmed, contextText)
+                        
+                        // Parse active triggers for auto-sending messages
+                        val triggerStart = "##SEND_MESSAGE_TRIGGER_START##"
+                        val triggerEnd = "##SEND_MESSAGE_TRIGGER_END##"
+                        if (response.contains(triggerStart) && response.contains(triggerEnd)) {
+                            try {
+                                val triggerBlock = response.substringAfter(triggerStart).substringBefore(triggerEnd).trim()
+                                val triggerParts = triggerBlock.split("|", limit = 2)
+                                if (triggerParts.size == 2) {
+                                    val recipient = triggerParts[0].trim()
+                                    val msgVal = triggerParts[1].trim()
+                                    sendChatMessage(recipient, msgVal)
+                                    _cliLogs.value = _cliLogs.value + CliLog("Проводник автоматически инициировал трансляцию P2P посылки к $recipient: '$msgVal'", "success")
+                                }
+                                response = response.substringBefore(triggerStart).trim() + "\n\n" + response.substringAfter(triggerEnd).trim()
+                                response = response.trim()
+                            } catch (e: Exception) {
+                                com.example.data.DiagnosticsTracker.logError("SuiteViewModel", "Error parsing message invoke trigger", e)
+                            }
+                        }
+                        
                         _cliLogs.value = _cliLogs.value + CliLog(response, "help")
                     }
                 }
             }
         } catch (e: Exception) {
             _cliLogs.value = _cliLogs.value + CliLog("Исключение: ${e.message}", "error")
+        }
+    }
+
+    fun sendChatMessageInteractive(recipientId: String, text: String) {
+        if (text.isBlank()) return
+        val sender = _currentAgentId.value
+        val timestamp = System.currentTimeMillis()
+        
+        viewModelScope.launch {
+            // 1. Save user's message locally
+            val userMsg = ChatMessageEntity(
+                senderId = sender,
+                recipientId = recipientId,
+                messageText = text,
+                timestamp = timestamp
+            )
+            repository.insertChatMessage(userMsg)
+            
+            // Broadcast via SMTP
+            val payload = "{\\\"text\\\":\\\"$text\\\",\\\"recipientId\\\":\\\"$recipientId\\\"}"
+            broadcastToPeers("CHAT_MESSAGE", "core", payload)
+            
+            // 2. We now simulate peer response by utilizing GeminiService
+            val peerAgent = agents.value.find { it.id == recipientId }
+            val peerName = peerAgent?.name ?: recipientId
+            val peerRole = peerAgent?.role ?: "Соратник"
+            val peerRep = peerAgent?.reputationScore ?: 20.0
+            
+            _cliLogs.value = _cliLogs.value + CliLog("Сеть P2P: Сообщение доставлено получателю $peerName. Ожидание ответа...", "info")
+            
+            val relevantHistory = chatMessages.value.filter {
+                (it.senderId == sender && it.recipientId == recipientId) ||
+                (it.senderId == recipientId && it.recipientId == sender)
+            }.takeLast(10)
+            
+            val historyText = relevantHistory.joinToString("\n") { msg ->
+                val sName = if (msg.senderId == sender) "Вы (Пользователь)" else peerName
+                "$sName: ${msg.messageText}"
+            }
+            
+            val systemPrompt = """
+                Вы выполняете роль соратника с именем $peerName (ID: $recipientId, Роль: $peerRole, Репутация: $peerRep REP).
+                В децентрализованной социальной ОС 'Открытый Орден' вы один из участников.
+                Пользователь (ID: $sender) только что прислал вам личное сообщение.
+                
+                Предыдущие сообщения между вами в этом чате:
+                $historyText
+                
+                Правила поведения:
+                - Напишите полностью ОТ ЛИЦА соратника по имени $peerName.
+                - Ваш стиль общения должен соответствовать роли:
+                  * Grandmaster/Knight (Рыцарь, Грандмастер): Благородный, мудрый, возвышенный, авторитетный, говорит об орденских ценностях, солидарности, учениях.
+                  * Adept (Адепт): Любознательный, преданный, стремящийся к знаниям, инициативный, энергичный.
+                  * Arbiter (Арбитр): Беспристрастный, юридически точный, справедливый, спокойный, взвешивает стороны, цитирует Свод Правил и Суд Чести.
+                  * Scribe (Писарь): Структурированный, архивный, документирующий, любящий точность записей и транзакций, педантичный.
+                - Отвечайте всегда на русском языке.
+                - Ответ должен быть кратким, живым, подходящим для чат-мессенджера (1-4 предложения), но содержательным.
+                - Ссылайтесь на обсуждаемую суть. Не добавляйте никаких системных тегов, пишите только вашу реплику в чате напрямую от первого лица.
+            """.trimIndent()
+            
+            try {
+                val simulatedReply = com.example.data.GeminiService.generateGuideResponse(
+                    prompt = text,
+                    contextText = "Вы - соратник $peerName. Общайтесь от первого лица.",
+                    customSystemInstruction = systemPrompt
+                )
+                
+                val peerMsg = ChatMessageEntity(
+                    senderId = recipientId,
+                    recipientId = sender,
+                    messageText = simulatedReply,
+                    timestamp = System.currentTimeMillis()
+                )
+                repository.insertChatMessage(peerMsg)
+                
+                _cliLogs.value = _cliLogs.value + CliLog(simulatedReply, "peer_$peerName")
+            } catch (e: Exception) {
+                com.example.data.DiagnosticsTracker.logError("SuiteViewModel", "Error simulating peer response", e)
+                _cliLogs.value = _cliLogs.value + CliLog("Сеть P2P: Не удалось получить ответ из ноосферы соратника $peerName (Сеть недоступна).", "error")
+            }
         }
     }
 }
