@@ -1,0 +1,8 @@
+{
+  "name": "Открытый Орден",
+  "description": "Децентрализованная социальная операционная система (Social OS) для бирюзового P2P-сообщества",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
